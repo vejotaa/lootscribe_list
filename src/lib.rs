@@ -1,3 +1,4 @@
+pub mod batch;
 pub mod clipboard;
 pub mod gemini;
 pub mod prompt;

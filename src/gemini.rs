@@ -92,7 +92,7 @@ impl ListingRequest {
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
 pub struct ShopeeListing {
     pub titulo: String,
     pub descricao: String,

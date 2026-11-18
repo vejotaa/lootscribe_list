@@ -1,30 +1,57 @@
-use clap::{ArgGroup, Parser};
+use clap::{ArgGroup, Parser, Subcommand};
 use std::path::PathBuf;
 #[derive(Parser, Debug)]
 #[command(
-    name = "lootscribe-list",
-    about = "Gera títulos e descrições otimizados para miniaturas 3D na Shopee via Gemini",
-    group(
-        ArgGroup::new("reference")
-        .required(true)
-        .multiple(true)
-        .args(["image", "url", "info"])
-    )
+    name = "lootscribe_list",
+    version,
+    about = "Gerador de títulos e descrições Shopee para miniaturas 3D",
+    args_conflicts_with_subcommands = true
 )]
-pub struct Args {
-    /// Caminho p foto da miniatura/peça (JPG, PNG, WEBP)
-    #[arg(short = 'i', long = "image")]
+#[command(group(
+    ArgGroup::new("reference")
+        .args(["image", "url", "info"])
+        .multiple(true)
+))]
+pub struct Cli {
+    #[command(subcommand)]
+    pub command: Option<Commands>,
+
+    /// Caminho da imagem da miniatura (PNG, JPG, WEBP)
+    #[arg(short, long)]
     pub image: Option<PathBuf>,
 
-    /// URL
-    #[arg(short = 'u', long = "url")]
+    /// URL de referência do modelo (MakerWorld, Printables, etc.)
+    #[arg(short, long)]
     pub url: Option<String>,
 
-    /// Metadados do produto (personagem, franquia, acabamento, tamanhos/variações)
-    #[arg(short = 'm', long = "metadata")]
+    /// Metadados adicionais (altura, acabamento, observações)
+    #[arg(short = 'm', long)]
     pub info: Option<String>,
 
-    /// Chave da API do Google AI Studio (GEMINI_API_KEY)
-    #[arg(long = "api-key", env = "GEMINI_API_KEY", hide_env_values = true)]
-    pub api_key: String,
+    /// Chave da API Gemini (padrão: env GEMINI_API_KEY)
+    #[arg(
+        long = "api-key",
+        env = "GEMINI_API_KEY",
+        hide_env_values = true,
+        global = true
+    )]
+    pub api_key: Option<String>,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum Commands {
+    /// Processa múltiplos anúncios em lote (via arquivo ou inserção dinâmica)
+    Batch {
+        /// Arquivo .txt com uma URL por linha (opcional: `url | metadados`)
+        #[arg(short, long)]
+        file: Option<PathBuf>,
+
+        /// Intervalo mínimo (segundos) entre requisições (padrão: 8)
+        #[arg(long, default_value_t = 8)]
+        min_delay: u64,
+
+        /// Intervalo máximo (segundos) entre requisições (padrão: 20)
+        #[arg(long, default_value_t = 20)]
+        max_delay: u64,
+    },
 }
