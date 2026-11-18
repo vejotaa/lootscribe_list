@@ -7,8 +7,11 @@ use anyhow::Result;
 use clap::Parser;
 use std::io::{self, Write};
 
-#[tokyo::main]
+#[tokio::main]
 async fn main() -> Result<()> {
+    // carregar .env do dir atual
+    dotenvy::dotenv().ok();
+
     let args = cli::Args::parse();
 
     println!("Analisando imagem e gerando anuncio via gemini-2.5-flash...");
@@ -31,12 +34,12 @@ async fn main() -> Result<()> {
         let mut input = String::new();
         io::stdin().read_line(&mut input)?;
 
-        match input_trim().to_lowercase().as_str() {
+        match input.trim().to_lowercase().as_str() {
             "t" => {
                 clipboard::copy_to_wayland(&listing.titulo)?;
                 println!("[✓] Título copiado!");
             }
-            "d" -> {
+            "d" => {
                 clipboard::copy_to_wayland(&listing.descricao)?;
                 println!("[✓] Descrição copiada!");
             }
@@ -46,6 +49,4 @@ async fn main() -> Result<()> {
     }
     
     Ok(())
-}
-
 }

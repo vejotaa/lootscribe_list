@@ -1,7 +1,7 @@
 use anyhow::{Context, Result, bail};
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use reqwest::Client;
-use serde::{Deserialze, Serialize}
+use serde::{Deserialize};
 use serde_json::json;
 use std::fs;
 use std::path::Path;
@@ -24,8 +24,8 @@ struct Candidate {
     content: Content,
 }
 
-#[derive(Deserialze)]
-struct Concent {
+#[derive(Deserialize)]
+struct Content {
     parts: Vec<Part>,
 }
 
@@ -36,7 +36,7 @@ struct Part {
 
 fn detect_mime_type(path: &Path) -> Result<&'static str> {
     match path
-        .extension
+        .extension()
         .and_then(|ext| ext.to_str())
         .map(|s| s.to_lowercase())
         .as_deref()
@@ -52,7 +52,7 @@ pub async fn generate_listing(
     api_key: &str,
     image_path: &Path,
     product_info: &str,
-) => Result<ShopeeListing> {
+) -> Result<ShopeeListing> {
     let image_bytes = fs::read(image_path)
         .with_context(|| format!("falha ao ler a imagem em {:?}", image_path))?;
     let mime_type = detect_mime_type(image_path)?;
