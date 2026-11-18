@@ -1,10 +1,8 @@
 mod cli;
-mod clipboard;
-mod gemini;
-mod prompt;
 
 use anyhow::Result;
 use clap::Parser;
+use lootscribe_list::{ClipboardManager, generate_listing};
 use std::io::{self, Write};
 
 #[tokio::main]
@@ -14,39 +12,52 @@ async fn main() -> Result<()> {
 
     let args = cli::Args::parse();
 
+    // instance viva durante toda exec do programa p garantir persist no Wayland
+    let mut clipboard = ClipboardManager::new()?;
+
+    let request = lootscribe_list::ListingRequest {
+        image: args.image,
+        url: args.url,
+        info: args.info,
+    };
+
     println!("\n\n === analisando imagem e gerando anuncio via Gemini! ===\n");
-    let listing = gemini::generate_listing(&args.api_key, &args.image, &args.info).await?;
+    let listing = generate_listing(&args.api_key, &request).await?;
+
     println!(
         "gerado com sucesso usando o modelo: [ {} ]\n",
         listing.model_used
     );
     println!(
-        "\n==================== TÍTULO ({} chars) ====================",
-        listing.titulo.chars().count()
+        "\n==================== TÍTULO ({} chars) ====================\n{}",
+        listing.titulo.chars().count(),
+        listing.titulo
     );
-    println!("{}", listing.titulo);
 
-    println!("\n======================= DESCRIÇÃO =======================");
-    println!("{}", listing.descricao);
+    println!(
+        "\n======================= DESCRIÇÃO =======================\n{}",
+        listing.descricao
+    );
     println!("=========================================================\n");
 
-    clipboard::copy_to_wayland(&listing.titulo)?;
+    clipboard.copy(&listing.titulo)?;
     println!("[✓] TÍTULO copiado automaticamente para o clipboard (Wayland).");
 
+    // menu interativo (segurando clip no wayland)
     loop {
         print!("\nAções: [t] Copiar Título | [d] Copiar Descrição | [q] Sair > ");
         io::stdout().flush()?;
 
-        let mut input = String::new();
-        io::stdin().read_line(&mut input)?;
+        let mut choice = String::new();
+        io::stdin().read_line(&mut choice)?;
 
-        match input.trim().to_lowercase().as_str() {
+        match choice.trim().to_lowercase().as_str() {
             "t" => {
-                clipboard::copy_to_wayland(&listing.titulo)?;
+                clipboard.copy(&listing.titulo)?;
                 println!("[✓] Título copiado!");
             }
             "d" => {
-                clipboard::copy_to_wayland(&listing.descricao)?;
+                clipboard.copy(&listing.descricao)?;
                 println!("[✓] Descrição copiada!");
             }
             "q" | "" => break,

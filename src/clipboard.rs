@@ -1,23 +1,20 @@
-use anyhow::{Context, Result, bail};
-use std::io::Write;
-use std::process::{Command, Stdio};
+use anyhow::{Context, Result};
+use arboard::Clipboard;
 
-pub fn copy_to_wayland(text: &str) -> Result<()> {
-    let mut child = Command::new("wl-copy")
-        .stdin(Stdio::piped())
-        .spawn()
-        .context("falha ao executar 'wl-copy'")?;
+pub struct ClipboardManager {
+    inner: Clipboard,
+}
 
-    if let Some(mut stdin) = child.stdin.take() {
-        stdin
-            .write_all(text.as_bytes())
-            .context("falha ao enviar texto para o stdin do wl-copy")?;
+impl ClipboardManager {
+    pub fn new() -> Result<Self> {
+        let inner = Clipboard::new()
+            .context("falha ao inicializar o acesso a area de transferencia do sistema")?;
+        Ok(Self { inner })
     }
 
-    let status = child.wait().context("erro ao aguardar termino do wl-copy")?;
-    if !status.success() {
-        bail!("wl-copy encerrou com codigo de erro: {}", status);
+    pub fn copy(&mut self, text: &str) -> Result<()> {
+        self.inner
+            .set_text(text)
+            .context("falha ao copiar texto para area de transferencia")
     }
-
-    Ok(())
 }
