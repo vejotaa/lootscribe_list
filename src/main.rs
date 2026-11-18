@@ -14,9 +14,12 @@ async fn main() -> Result<()> {
 
     let args = cli::Args::parse();
 
-    println!("Analisando imagem e gerando anuncio via gemini-2.5-flash...");
+    println!("\n\n === analisando imagem e gerando anuncio via Gemini! ===\n");
     let listing = gemini::generate_listing(&args.api_key, &args.image, &args.info).await?;
-
+    println!(
+        "gerado com sucesso usando o modelo: [ {} ]\n",
+        listing.model_used
+    );
     println!(
         "\n==================== TÍTULO ({} chars) ====================",
         listing.titulo.chars().count()

@@ -13,6 +13,8 @@ use crate::prompt::SYSTEM_INSTRUCTION;
 pub struct ShopeeListing {
     pub titulo: String,
     pub descricao: String,
+    #[serde(skip)]
+    pub model_used: String,
 }
 
 #[derive(Deserialize)]
@@ -145,9 +147,12 @@ pub async fn generate_listing(
                 .trim_end_matches("```")
                 .trim();
 
-            let listing: ShopeeListing = serde_json::from_str(clean_json).with_context(|| {
-                format!("JSON inválido retornado por {}: {}", model, clean_json)
-            })?;
+            let mut listing: ShopeeListing =
+                serde_json::from_str(clean_json).with_context(|| {
+                    format!("JSON inválido retornado por {}: {}", model, clean_json)
+                })?;
+
+            listing.model_used = model.to_string();
 
             return Ok(listing);
         }
