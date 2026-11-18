@@ -17,7 +17,10 @@ async fn main() -> Result<()> {
     println!("Analisando imagem e gerando anuncio via gemini-2.5-flash...");
     let listing = gemini::generate_listing(&args.api_key, &args.image, &args.info).await?;
 
-    println!("\n==================== TÍTULO ({} chars) ====================", listing.titulo.chars().count());
+    println!(
+        "\n==================== TÍTULO ({} chars) ====================",
+        listing.titulo.chars().count()
+    );
     println!("{}", listing.titulo);
 
     println!("\n======================= DESCRIÇÃO =======================");
@@ -47,6 +50,6 @@ async fn main() -> Result<()> {
             _ => println!("Opcao invalida."),
         }
     }
-    
+
     Ok(())
 }
