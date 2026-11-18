@@ -524,3 +524,40 @@ pub async fn run_batch_mode(
     worker_handle.abort();
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+
+    #[test]
+    fn test_parse_batch_file_dedup_and_metadata() {
+        let mut temp_path = std::env::temp_dir();
+        temp_path.push("lootscribe_test_links.txt");
+
+        let mut file = fs::File::create(&temp_path).unwrap();
+        writeln!(
+            file,
+            "# Comentário ignorado\n\n\
+             https://makerworld.com/model/1 | 15cm, pintura artesanal\n\
+             https://makerworld.com/model/2\n\
+             https://makerworld.com/model/1 | duplicada deve ser ignorada"
+        )
+        .unwrap();
+
+        let requests = parse_batch_file(&temp_path).unwrap();
+        let _ = fs::remove_file(&temp_path);
+
+        assert_eq!(requests.len(), 2);
+        assert_eq!(
+            requests[0].url.as_deref(),
+            Some("https://makerworld.com/model/1")
+        );
+        assert_eq!(requests[0].info.as_deref(), Some("15cm, pintura artesanal"));
+        assert_eq!(
+            requests[1].url.as_deref(),
+            Some("https://makerworld.com/model/2")
+        );
+        assert_eq!(requests[1].info, None);
+    }
+}

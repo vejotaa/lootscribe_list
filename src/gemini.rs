@@ -94,7 +94,9 @@ impl ListingRequest {
 
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
 pub struct ShopeeListing {
+    #[serde(alias = "title")]
     pub titulo: String,
+    #[serde(alias = "description")]
     pub descricao: String,
     #[serde(skip)]
     pub model_used: String,
@@ -218,4 +220,40 @@ pub async fn generate_listing(api_key: &str, req: &ListingRequest) -> Result<Sho
     }
 
     Err(last_error.context("Todos os modelos da cadeia de fallback falharam"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_shopee_listing_bilingual_aliases() {
+        let json_en = r#"{
+            "title": "Miniatura 3D Rapi – Nikke - Pintado à Mão",
+            "description": "Descrição de teste"
+        }"#;
+        let parsed_en: ShopeeListing = serde_json::from_str(json_en).unwrap();
+        assert_eq!(
+            parsed_en.titulo,
+            "Miniatura 3D Rapi – Nikke - Pintado à Mão"
+        );
+        assert_eq!(parsed_en.descricao, "Descrição de teste");
+
+        let json_pt = r#"{
+            "titulo": "Miniatura 3D BMW M4",
+            "descricao": "Descrição PT"
+        }"#;
+        let parsed_pt: ShopeeListing = serde_json::from_str(json_pt).unwrap();
+        assert_eq!(parsed_pt.titulo, "Miniatura 3D BMW M4");
+    }
+
+    #[test]
+    fn test_listing_request_empty_validation() {
+        let empty_req = ListingRequest {
+            image: None,
+            url: None,
+            info: None,
+        };
+        assert!(empty_req.validate().is_err());
+    }
 }
