@@ -2,6 +2,7 @@ pub mod batch;
 pub mod clipboard;
 pub mod gemini;
 pub mod prompt;
+pub mod tui;
 
 // re-exports para uso externo
 

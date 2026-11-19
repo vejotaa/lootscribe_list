@@ -39,54 +39,61 @@ async fn main() -> Result<()> {
             )
             .await?;
         }
+        Some(Commands::Tui { file }) => {
+            lootscribe_list::tui::run_tui(api_key, file, clipboard).await?;
+        }
         None => {
-            let request = ListingRequest {
-                image: cli.image,
-                url: cli.url,
-                info: cli.info,
-            };
-            request.validate()?;
+            if cli.image.is_none() && cli.url.is_none() && cli.info.is_none() {
+                lootscribe_list::tui::run_tui(api_key, None, clipboard).await?;
+            } else {
+                let request = ListingRequest {
+                    image: cli.image,
+                    url: cli.url,
+                    info: cli.info,
+                };
+                request.validate()?;
 
-            println!("\n=== analisando imagem e gerando anuncio via Gemini! ===\n");
-            let listing = generate_listing(&api_key, &request).await?;
+                println!("\n=== analisando imagem e gerando anuncio via Gemini! ===\n");
+                let listing = generate_listing(&api_key, &request).await?;
 
-            clear_screen();
-            println!(
-                "gerado com sucesso usando o modelo: [ {} ]\n",
-                listing.model_used
-            );
-            println!(
-                "=============== TÍTULO ({} chars) ===============\n{}",
-                listing.titulo.chars().count(),
-                listing.titulo
-            );
-            println!(
-                "\n=============== DESCRIÇÃO ===============\n{}",
-                listing.descricao
-            );
-            println!("=========================================\n");
+                clear_screen();
+                println!(
+                    "gerado com sucesso usando o modelo: [ {} ]\n",
+                    listing.model_used
+                );
+                println!(
+                    "=============== TÍTULO ({} chars) ===============\n{}",
+                    listing.titulo.chars().count(),
+                    listing.titulo
+                );
+                println!(
+                    "\n=============== DESCRIÇÃO ===============\n{}",
+                    listing.descricao
+                );
+                println!("=========================================\n");
 
-            clipboard.copy(&listing.titulo)?;
-            println!("[✓] TÍTULO copiado automaticamente para o clipboard.");
+                clipboard.copy(&listing.titulo)?;
+                println!("[✓] TÍTULO copiado automaticamente para o clipboard.");
 
-            loop {
-                print!("\nAções: [t] Copiar Título | [d] Copiar Descrição | [q] Sair > ");
-                io::stdout().flush()?;
+                loop {
+                    print!("\nAções: [t] Copiar Título | [d] Copiar Descrição | [q] Sair > ");
+                    io::stdout().flush()?;
 
-                let mut choice = String::new();
-                io::stdin().read_line(&mut choice)?;
+                    let mut choice = String::new();
+                    io::stdin().read_line(&mut choice)?;
 
-                match choice.trim().to_lowercase().as_str() {
-                    "t" => {
-                        clipboard.copy(&listing.titulo)?;
-                        println!("[✓] Título copiado!");
+                    match choice.trim().to_lowercase().as_str() {
+                        "t" => {
+                            clipboard.copy(&listing.titulo)?;
+                            println!("[✓] Título copiado!");
+                        }
+                        "d" => {
+                            clipboard.copy(&listing.descricao)?;
+                            println!("[✓] Descrição copiada!");
+                        }
+                        "q" | "" => break,
+                        _ => println!("Opcao invalida."),
                     }
-                    "d" => {
-                        clipboard.copy(&listing.descricao)?;
-                        println!("[✓] Descrição copiada!");
-                    }
-                    "q" | "" => break,
-                    _ => println!("Opcao invalida."),
                 }
             }
         }

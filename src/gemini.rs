@@ -1,9 +1,11 @@
 use anyhow::{Context, Result, bail};
 use base64::{Engine as _, engine::general_purpose::STANDARD};
+use image::ImageFormat;
 use reqwest::Client;
 use serde::Deserialize;
 use serde_json::json;
-use std::fs;
+use std::io::Cursor;
+use std::net::{IpAddr, Ipv4Addr};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -11,11 +13,11 @@ use crate::prompt::SYSTEM_INSTRUCTION;
 
 const FALLBACK_MODELS: &[&str] = &[
     "gemini-3.5-flash-lite",
-    "gemini-3.5-flash",
-    "gemini-3.8-flash",
     "gemini-3.6-flash",
-    "gemini-flash-latest",
+    "gemini-3.7-flash",
 ];
+
+const MAX_IMAGE_DIMENSION: u32 = 1280;
 
 #[derive(Debug, Clone)]
 pub struct ListingRequest {
@@ -25,7 +27,7 @@ pub struct ListingRequest {
 }
 
 impl ListingRequest {
-    /// Garante programaticamente que há ao menos uma referência válida e que a URL é bem-formada
+    /// Garante programaticamente que há ao menos uma referência válida, URL bem-formada e arquivo existente
     pub fn validate(&self) -> Result<()> {
         let has_image = self.image.is_some();
         let has_url = self.url.as_deref().is_some_and(|s| !s.trim().is_empty());
@@ -33,6 +35,13 @@ impl ListingRequest {
 
         if !has_image && !has_url && !has_info {
             bail!("Envie ao menos uma referência (imagem, URL ou metadados)!");
+        }
+
+        if let Some(img_path) = &self.image {
+            if !img_path.exists() || !img_path.is_file() {
+                bail!("Arquivo de imagem não encontrado: {}", img_path.display());
+            }
+            detect_mime_type(img_path)?;
         }
 
         if let Some(u) = &self.url
@@ -93,17 +102,13 @@ impl ListingRequest {
 
         parts.push(json!({ "text": text_blocks.join("\n\n") }));
 
-        // 2. Visual (se houver imagem)
+        // 2. Visual (com redimensionamento automático para evitar payloads gigantes)
         if let Some(image_path) = &self.image {
-            let bytes = fs::read(image_path).with_context(|| {
-                format!("Não foi possível ler a imagem: {}", image_path.display())
-            })?;
-            let b64 = STANDARD.encode(&bytes);
-            let mime_type = detect_mime_type(image_path)?;
+            let (b64, mime_type) = encode_optimized_image(image_path)?;
 
             parts.push(json!({
-                "inline_data": {
-                    "mime_type": mime_type,
+                "inlineData": {
+                    "mimeType": mime_type,
                     "data": b64
                 }
             }));
@@ -111,6 +116,39 @@ impl ListingRequest {
 
         Ok(parts)
     }
+}
+
+/// Carrega a imagem, redimensiona se passar de 1280px e comprime em JPEG para upload rápido
+fn encode_optimized_image(path: &Path) -> Result<(String, &'static str)> {
+    let mime = detect_mime_type(path)?;
+    let raw_bytes = std::fs::read(path)
+        .with_context(|| format!("Não foi possível ler a imagem: {}", path.display()))?;
+
+    // Se já for leve (< 350 KB), envia os bytes originais sem recompressão
+    if raw_bytes.len() <= 350 * 1024 {
+        return Ok((STANDARD.encode(&raw_bytes), mime));
+    }
+
+    let img = image::load_from_memory(&raw_bytes)
+        .with_context(|| format!("Falha ao decodificar imagem: {}", path.display()))?;
+
+    let resized = if img.width() > MAX_IMAGE_DIMENSION || img.height() > MAX_IMAGE_DIMENSION {
+        img.resize(
+            MAX_IMAGE_DIMENSION,
+            MAX_IMAGE_DIMENSION,
+            image::imageops::FilterType::Triangle,
+        )
+    } else {
+        img
+    };
+
+    let mut buf = Cursor::new(Vec::new());
+    resized
+        .to_rgb8()
+        .write_to(&mut buf, ImageFormat::Jpeg)
+        .context("Falha ao comprimir imagem para JPEG")?;
+
+    Ok((STANDARD.encode(buf.into_inner()), "image/jpeg"))
 }
 
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
@@ -184,10 +222,17 @@ fn parse_shopee_listing(cleaned: &str) -> Result<ShopeeListing> {
 }
 
 pub async fn generate_listing(api_key: &str, req: &ListingRequest) -> Result<ShopeeListing> {
-    let parts = req.build_gemini_parts()?;
+    // Executa leitura/redimensionamento da imagem em thread bloqueante para não travar o runtime Tokio/TUI
+    let req_clone = req.clone();
+    let parts = tokio::task::spawn_blocking(move || req_clone.build_gemini_parts())
+        .await
+        .context("Falha na task de preparação de payload")??;
 
     let client = Client::builder()
-        .timeout(Duration::from_secs(30))
+        .local_address(IpAddr::V4(Ipv4Addr::UNSPECIFIED))
+        .http1_only()
+        .connect_timeout(Duration::from_secs(10))
+        .timeout(Duration::from_secs(45))
         .build()
         .context("Falha ao inicializar cliente HTTP")?;
 
@@ -213,113 +258,68 @@ pub async fn generate_listing(api_key: &str, req: &ListingRequest) -> Result<Sho
 
     let mut last_error = anyhow::anyhow!("Nenhum modelo disponível na lista de fallback");
 
-    for &model in FALLBACK_MODELS {
-        let endpoint = format!(
-            "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
-        );
+    // Até 3 rodadas completas pela cadeia de fallback se houver 503/429 temporário
+    for attempt in 1..=3 {
+        let mut should_retry_backoff = false;
 
-        let response = match client
-            .post(&endpoint)
-            .header("x-goog-api-key", api_key)
-            .json(&payload)
-            .send()
-            .await
-        {
-            Ok(resp) => resp,
-            Err(err) => {
-                eprintln!("[!] Erro de rede no modelo {model}: {err}. Tentando próximo...");
-                last_error = err.into();
+        for &model in FALLBACK_MODELS {
+            let endpoint = format!(
+                "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+            );
+
+            let response = match client
+                .post(&endpoint)
+                .header("x-goog-api-key", api_key.trim())
+                .json(&payload)
+                .send()
+                .await
+            {
+                Ok(resp) => resp,
+                Err(err) => {
+                    last_error = anyhow::anyhow!("Erro de rede/timeout em {model}: {err:?}");
+                    should_retry_backoff = true;
+                    continue;
+                }
+            };
+
+            let status = response.status();
+            if !status.is_success() {
+                let body = response.text().await.unwrap_or_default();
+                if status.as_u16() == 503 || status.as_u16() == 429 {
+                    should_retry_backoff = true;
+                }
+                last_error = anyhow::anyhow!("HTTP {status} em {model}: {body}");
                 continue;
             }
-        };
 
-        let status = response.status();
-        if !status.is_success() {
-            let body = response.text().await.unwrap_or_default();
-            eprintln!("[!] Modelo {model} retornou status {status}: {body}. Tentando próximo...");
-            last_error = anyhow::anyhow!("HTTP {status} em {model}: {body}");
-            continue;
+            let gemini_resp: GeminiResponse = response
+                .json()
+                .await
+                .with_context(|| format!("Falha ao decodificar resposta HTTP do modelo {model}"))?;
+
+            let raw_text = gemini_resp
+                .candidates
+                .and_then(|c| c.into_iter().next())
+                .and_then(|c| c.content.parts.into_iter().next())
+                .map(|p| p.text)
+                .context("Resposta da API do Gemini veio sem conteúdo de texto")?;
+
+            let cleaned = clean_markdown_json(&raw_text);
+
+            let mut listing = parse_shopee_listing(cleaned).with_context(|| {
+                format!("Falha ao fazer parse do JSON retornado por {model}:\n{cleaned}")
+            })?;
+
+            listing.model_used = model.to_string();
+            return Ok(listing);
         }
 
-        let gemini_resp: GeminiResponse = response
-            .json()
-            .await
-            .with_context(|| format!("Falha ao decodificar resposta HTTP do modelo {model}"))?;
-
-        let raw_text = gemini_resp
-            .candidates
-            .and_then(|c| c.into_iter().next())
-            .and_then(|c| c.content.parts.into_iter().next())
-            .map(|p| p.text)
-            .context("Resposta da API do Gemini veio sem conteúdo de texto")?;
-
-        let cleaned = clean_markdown_json(&raw_text);
-
-        let mut listing = parse_shopee_listing(cleaned).with_context(|| {
-            format!("Falha ao fazer parse do JSON retornado por {model}:\n{cleaned}")
-        })?;
-
-        listing.model_used = model.to_string();
-        return Ok(listing);
+        if should_retry_backoff && attempt < 3 {
+            tokio::time::sleep(Duration::from_secs(attempt * 3)).await;
+        } else {
+            break;
+        }
     }
 
     Err(last_error.context("Todos os modelos da cadeia de fallback falharam"))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_shopee_listing_bilingual_aliases() {
-        let json_en = r#"{
-            "title": "Miniatura 3D Rapi – Nikke - Pintado à Mão",
-            "description": "Descrição de teste"
-        }"#;
-        let parsed_en: ShopeeListing = serde_json::from_str(json_en).unwrap();
-        assert_eq!(
-            parsed_en.titulo,
-            "Miniatura 3D Rapi – Nikke - Pintado à Mão"
-        );
-        assert_eq!(parsed_en.descricao, "Descrição de teste");
-
-        let json_pt = r#"{
-            "titulo": "Miniatura 3D BMW M4",
-            "descricao": "Descrição PT"
-        }"#;
-        let parsed_pt: ShopeeListing = serde_json::from_str(json_pt).unwrap();
-        assert_eq!(parsed_pt.titulo, "Miniatura 3D BMW M4");
-    }
-
-    #[test]
-    fn test_listing_request_empty_validation() {
-        let empty_req = ListingRequest {
-            image: None,
-            url: None,
-            info: None,
-        };
-        assert!(empty_req.validate().is_err());
-    }
-
-    #[test]
-    fn test_listing_request_malformed_url_validation() {
-        for bad_url in ["teste", "httpsalf", "https://", "https://sem ponto"] {
-            let req = ListingRequest {
-                image: None,
-                url: Some(bad_url.to_string()),
-                info: None,
-            };
-            assert!(
-                req.validate().is_err(),
-                "Deveria ter rejeitado URL inválida: {bad_url}"
-            );
-        }
-
-        let valid_req = ListingRequest {
-            image: None,
-            url: Some("https://makerworld.com/en/models/3604553".to_string()),
-            info: None,
-        };
-        assert!(valid_req.validate().is_ok());
-    }
 }

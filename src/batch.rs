@@ -116,7 +116,7 @@ pub fn parse_batch_file(path: &Path) -> Result<Vec<ListingRequest>> {
 }
 
 /// Salva snapshots incrementais em `./output/batch_<timestamp>.json` e `.md`
-fn persist_outputs(entries: &[BatchEntry], json_path: &Path, md_path: &Path) -> Result<()> {
+pub fn persist_outputs(entries: &[BatchEntry], json_path: &Path, md_path: &Path) -> Result<()> {
     let completed = entries
         .iter()
         .filter(|e| matches!(e.status, EntryStatus::Completed { .. }))

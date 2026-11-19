@@ -1,5 +1,6 @@
 use clap::{ArgGroup, Parser, Subcommand};
 use std::path::PathBuf;
+
 #[derive(Parser, Debug)]
 #[command(
     name = "lootscribe_list",
@@ -53,5 +54,11 @@ pub enum Commands {
         /// Intervalo máximo (segundos) entre requisições (padrão: 20)
         #[arg(long, default_value_t = 20)]
         max_delay: u64,
+    },
+    /// Abre a interface interativa TUI (padrão ao executar sem argumentos)
+    Tui {
+        /// Arquivo .txt opcional para pré-carregar a fila (`url` ou `url | metadados`)
+        #[arg(short, long)]
+        file: Option<PathBuf>,
     },
 }

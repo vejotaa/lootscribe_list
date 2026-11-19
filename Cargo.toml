@@ -1,6 +1,6 @@
 [package]
 name = "lootscribe_list"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 
 [lib]
@@ -26,6 +26,14 @@ reqwest = { version = "0.13.5", default-features = false, features = [
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
 tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros"] }
+ratatui = "0.30.2"
+crossterm = { version = "0.29.0", features = ["event-stream"] }
+futures = "0.3.34"
+image = { version = "0.25.10", default-features = false, features = [
+  "jpeg",
+  "png",
+  "webp",
+] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 arboard = { version = "3.7.0", features = ["wayland-data-control"] }
