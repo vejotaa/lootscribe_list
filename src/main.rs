@@ -6,6 +6,11 @@ use std::io::{self, Write};
 mod cli;
 use cli::{Cli, Commands};
 
+fn clear_screen() {
+    print!("\x1B[2J\x1B[1;1H");
+    let _ = io::stdout().flush();
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     dotenvy::dotenv().ok();
@@ -45,12 +50,13 @@ async fn main() -> Result<()> {
             println!("\n=== analisando imagem e gerando anuncio via Gemini! ===\n");
             let listing = generate_listing(&api_key, &request).await?;
 
+            clear_screen();
             println!(
                 "gerado com sucesso usando o modelo: [ {} ]\n",
                 listing.model_used
             );
             println!(
-                "\n=============== TÍTULO ({} chars) ===============\n{}",
+                "=============== TÍTULO ({} chars) ===============\n{}",
                 listing.titulo.chars().count(),
                 listing.titulo
             );
@@ -61,7 +67,7 @@ async fn main() -> Result<()> {
             println!("=========================================\n");
 
             clipboard.copy(&listing.titulo)?;
-            println!("[✓] TÍTULO copiado automaticamente para o clipboard (Wayland).");
+            println!("[✓] TÍTULO copiado automaticamente para o clipboard.");
 
             loop {
                 print!("\nAções: [t] Copiar Título | [d] Copiar Descrição | [q] Sair > ");

@@ -25,7 +25,7 @@ pub struct ListingRequest {
 }
 
 impl ListingRequest {
-    /// Garante programaticamente que há ao menos uma referência válida
+    /// Garante programaticamente que há ao menos uma referência válida e que a URL é bem-formada
     pub fn validate(&self) -> Result<()> {
         let has_image = self.image.is_some();
         let has_url = self.url.as_deref().is_some_and(|s| !s.trim().is_empty());
@@ -34,6 +34,27 @@ impl ListingRequest {
         if !has_image && !has_url && !has_info {
             bail!("Envie ao menos uma referência (imagem, URL ou metadados)!");
         }
+
+        if let Some(u) = &self.url
+            && !u.trim().is_empty()
+        {
+            let trimmed = u.trim();
+            let has_scheme = trimmed.starts_with("http://") || trimmed.starts_with("https://");
+            let host_part = trimmed
+                .strip_prefix("https://")
+                .or_else(|| trimmed.strip_prefix("http://"))
+                .unwrap_or("");
+            let has_valid_host = !host_part.is_empty()
+                && !host_part.contains(char::is_whitespace)
+                && host_part.contains('.');
+
+            if !has_scheme || !has_valid_host {
+                bail!(
+                    "URL inválida ('{trimmed}'). Informe um link completo começando com http:// ou https:// (ex: https://makerworld.com/...)"
+                );
+            }
+        }
+
         Ok(())
     }
 
@@ -148,6 +169,20 @@ fn clean_markdown_json(raw: &str) -> &str {
         .trim()
 }
 
+fn parse_shopee_listing(cleaned: &str) -> Result<ShopeeListing> {
+    if let Ok(listing) = serde_json::from_str::<ShopeeListing>(cleaned) {
+        return Ok(listing);
+    }
+
+    if let Ok(mut list) = serde_json::from_str::<Vec<ShopeeListing>>(cleaned)
+        && let Some(first) = list.drain(..).next()
+    {
+        return Ok(first);
+    }
+
+    serde_json::from_str::<ShopeeListing>(cleaned).map_err(Into::into)
+}
+
 pub async fn generate_listing(api_key: &str, req: &ListingRequest) -> Result<ShopeeListing> {
     let parts = req.build_gemini_parts()?;
 
@@ -164,7 +199,15 @@ pub async fn generate_listing(api_key: &str, req: &ListingRequest) -> Result<Sho
             "parts": parts
         }],
         "generationConfig": {
-            "responseMimeType": "application/json"
+            "responseMimeType": "application/json",
+            "responseSchema": {
+                "type": "OBJECT",
+                "properties": {
+                    "titulo": { "type": "STRING" },
+                    "descricao": { "type": "STRING"}
+                },
+                "required": ["titulo", "descricao"]
+            }
         }
     });
 
@@ -211,7 +254,8 @@ pub async fn generate_listing(api_key: &str, req: &ListingRequest) -> Result<Sho
             .context("Resposta da API do Gemini veio sem conteúdo de texto")?;
 
         let cleaned = clean_markdown_json(&raw_text);
-        let mut listing: ShopeeListing = serde_json::from_str(cleaned).with_context(|| {
+
+        let mut listing = parse_shopee_listing(cleaned).with_context(|| {
             format!("Falha ao fazer parse do JSON retornado por {model}:\n{cleaned}")
         })?;
 
@@ -255,5 +299,27 @@ mod tests {
             info: None,
         };
         assert!(empty_req.validate().is_err());
+    }
+
+    #[test]
+    fn test_listing_request_malformed_url_validation() {
+        for bad_url in ["teste", "httpsalf", "https://", "https://sem ponto"] {
+            let req = ListingRequest {
+                image: None,
+                url: Some(bad_url.to_string()),
+                info: None,
+            };
+            assert!(
+                req.validate().is_err(),
+                "Deveria ter rejeitado URL inválida: {bad_url}"
+            );
+        }
+
+        let valid_req = ListingRequest {
+            image: None,
+            url: Some("https://makerworld.com/en/models/3604553".to_string()),
+            info: None,
+        };
+        assert!(valid_req.validate().is_ok());
     }
 }

@@ -42,6 +42,30 @@ struct BatchReport {
     items: Vec<BatchEntry>,
 }
 
+/// Normaliza uma URL para deduplicação consistente (ignora `#fragment`, `?query`, `/` final e case do host)
+pub fn canonical_url_key(raw: &str) -> String {
+    let trimmed = raw.trim();
+    let without_fragment = trimmed.split('#').next().unwrap_or(trimmed);
+    let without_query = without_fragment
+        .split('?')
+        .next()
+        .unwrap_or(without_fragment);
+    let no_trailing_slash = without_query.trim_end_matches('/');
+
+    if let Some((scheme, rest)) = no_trailing_slash.split_once("://") {
+        let mut parts = rest.splitn(2, '/');
+        let host = parts.next().unwrap_or("").to_lowercase();
+        match parts.next() {
+            Some(path) if !path.is_empty() => {
+                format!("{}://{}/{}", scheme.to_lowercase(), host, path)
+            }
+            _ => format!("{}://{}", scheme.to_lowercase(), host),
+        }
+    } else {
+        no_trailing_slash.to_lowercase()
+    }
+}
+
 /// Lê linhas de um arquivo `.txt` no formato:
 /// `https://makerworld.com/...`
 /// ou `https://makerworld.com/... | 15cm, pintura artesanal`
@@ -67,7 +91,16 @@ pub fn parse_batch_file(path: &Path) -> Result<Vec<ListingRequest>> {
             continue;
         }
 
-        if !seen_urls.insert(url_part.to_string()) {
+        let req = ListingRequest {
+            image: None,
+            url: Some(url_part.to_string()),
+            info: info_part.filter(|s| !s.is_empty()),
+        };
+        req.validate()
+            .with_context(|| format!("Erro na linha {} do arquivo de lote", line_num + 1))?;
+
+        let key = canonical_url_key(url_part);
+        if !seen_urls.insert(key) {
             eprintln!(
                 "⚠️  Linha {} ignorada (URL duplicada): {}",
                 line_num + 1,
@@ -76,12 +109,6 @@ pub fn parse_batch_file(path: &Path) -> Result<Vec<ListingRequest>> {
             continue;
         }
 
-        let req = ListingRequest {
-            image: None,
-            url: Some(url_part.to_string()),
-            info: info_part.filter(|s| !s.is_empty()),
-        };
-        req.validate()?;
         requests.push(req);
     }
 
@@ -173,7 +200,6 @@ async fn run_worker(
     let mut is_first = true;
 
     while let Some((idx, req)) = rx.recv().await {
-        // Jitter aleatório entre requisições (evita 429 e comportamento robótico)
         if !is_first && max_delay > 0 {
             let wait_secs = if min_delay >= max_delay {
                 min_delay
@@ -184,7 +210,6 @@ async fn run_worker(
         }
         is_first = false;
 
-        // Marca como Processing
         {
             let mut list = state.lock().unwrap();
             if let Some(item) = list.get_mut(idx) {
@@ -194,7 +219,6 @@ async fn run_worker(
 
         let result = generate_listing(&api_key, &req).await;
 
-        // Atualiza resultado e salva snapshot em disco
         {
             let mut list = state.lock().unwrap();
             if let Some(item) = list.get_mut(idx) {
@@ -219,7 +243,8 @@ fn enqueue_item(
     req.validate()?;
 
     if let Some(u) = &req.url {
-        if !seen_urls.insert(u.clone()) {
+        let key = canonical_url_key(u);
+        if !seen_urls.insert(key) {
             println!("⚠️  URL duplicada ignorada neste lote: {u}");
             return Ok(false);
         }
@@ -285,12 +310,16 @@ fn collect_interactive_inputs(
             },
         };
 
-        if enqueue_item(req, state, tx, seen_urls)? {
-            let current_len = state.lock().unwrap().len();
-            println!(
-                "   ✅ Enfileirado como #{}! Processando em background...\n",
-                current_len
-            );
+        match enqueue_item(req, state, tx, seen_urls) {
+            Ok(true) => {
+                let current_len = state.lock().unwrap().len();
+                println!(
+                    "   ✅ Enfileirado como #{}! Processando em background...\n",
+                    current_len
+                );
+            }
+            Ok(false) => println!(),
+            Err(err) => println!("   ❌ {err}\n"),
         }
     }
 
@@ -302,7 +331,7 @@ fn clear_screen() {
     let _ = io::stdout().flush();
 }
 
-fn render_current_card(entries: &[BatchEntry], cursor: usize) {
+fn render_current_card(entries: &[BatchEntry], cursor: usize, notice: Option<&str>) {
     clear_screen();
 
     let total = entries.len();
@@ -360,6 +389,9 @@ fn render_current_card(entries: &[BatchEntry], cursor: usize) {
     println!(
         "[a] Próximo | [r] Anterior | [t] Copiar Título | [d] Copiar Desc | [+] Add URL | [s] Atualizar | [q] Sair"
     );
+    if let Some(msg) = notice {
+        println!("💬 {msg}");
+    }
 }
 
 fn print_final_summary(entries: &[BatchEntry], json_path: &Path, md_path: &Path) {
@@ -411,7 +443,6 @@ pub async fn run_batch_mode(
     let (tx, rx) = mpsc::unbounded_channel::<(usize, ListingRequest)>();
     let mut seen_urls = HashSet::new();
 
-    // Dispara o worker em background imediatamente
     let worker_state = Arc::clone(&state);
     let worker_json = json_path.clone();
     let worker_md = md_path.clone();
@@ -449,13 +480,13 @@ pub async fn run_batch_mode(
         return Ok(());
     }
 
-    // Salva estado inicial
     {
         let snapshot = state.lock().unwrap().clone();
         persist_outputs(&snapshot, &json_path, &md_path)?;
     }
 
     let mut cursor: usize = 0;
+    let mut notice: Option<String> = None;
     let stdin = io::stdin();
 
     loop {
@@ -464,7 +495,8 @@ pub async fn run_batch_mode(
             cursor = snapshot.len().saturating_sub(1);
         }
 
-        render_current_card(&snapshot, cursor);
+        render_current_card(&snapshot, cursor, notice.as_deref());
+        notice = None;
         print!("> ");
         io::stdout().flush()?;
 
@@ -476,47 +508,51 @@ pub async fn run_batch_mode(
                 if cursor + 1 < snapshot.len() {
                     cursor += 1;
                 } else {
-                    println!("⚠️  Você já está no último modelo da lista.");
+                    notice = Some("⚠️  Você já está no último modelo da lista.".to_string());
                 }
             }
             "r" => {
                 if cursor > 0 {
                     cursor -= 1;
                 } else {
-                    println!("⚠️  Você já está no primeiro modelo da lista.");
+                    notice = Some("⚠️  Você já está no primeiro modelo da lista.".to_string());
                 }
             }
             "t" => match &snapshot[cursor].status {
                 EntryStatus::Completed { listing } => {
                     clipboard.copy(&listing.titulo)?;
-                    println!("📋 Título #{} copiado para o clipboard!", cursor + 1);
+                    notice = Some(format!(
+                        "📋 Título #{} copiado para o clipboard!",
+                        cursor + 1
+                    ));
                 }
-                _ => println!("⚠️  Este item ainda não foi concluído ou falhou."),
+                _ => notice = Some("⚠️  Este item ainda não foi concluído ou falhou.".to_string()),
             },
             "d" => match &snapshot[cursor].status {
                 EntryStatus::Completed { listing } => {
                     clipboard.copy(&listing.descricao)?;
-                    println!("📋 Descrição #{} copiada para o clipboard!", cursor + 1);
+                    notice = Some(format!(
+                        "📋 Descrição #{} copiada para o clipboard!",
+                        cursor + 1
+                    ));
                 }
-                _ => println!("⚠️  Este item ainda não foi concluído ou falhou."),
+                _ => notice = Some("⚠️  Este item ainda não foi concluído ou falhou.".to_string()),
             },
             "+" => {
                 clear_screen();
                 collect_interactive_inputs(&state, &tx, &mut seen_urls)?;
             }
-            "s" | "" => {
-                // Apenas re-renderiza com o estado atualizado da thread worker
-            }
+            "s" | "" => {}
             "q" => {
                 clear_screen();
-                drop(tx); // Fecha canal para o worker finalizar limpo se ocioso
+                drop(tx);
                 let final_snapshot = state.lock().unwrap().clone();
                 let _ = persist_outputs(&final_snapshot, &json_path, &md_path);
                 print_final_summary(&final_snapshot, &json_path, &md_path);
                 break;
             }
             _ => {
-                println!("Comando inválido. Use: a, r, t, d, +, s ou q.");
+                notice = Some("Comando inválido. Use: a, r, t, d, +, s ou q.".to_string());
             }
         }
     }
@@ -531,6 +567,18 @@ mod tests {
     use std::io::Write;
 
     #[test]
+    fn test_canonical_url_key_normalization() {
+        assert_eq!(
+            canonical_url_key("https://MakerWorld.com/en/models/3604553/#profileId-2189745"),
+            "https://makerworld.com/en/models/3604553"
+        );
+        assert_eq!(
+            canonical_url_key("https://makerworld.com/en/models/3604553?ref=share"),
+            "https://makerworld.com/en/models/3604553"
+        );
+    }
+
+    #[test]
     fn test_parse_batch_file_dedup_and_metadata() {
         let mut temp_path = std::env::temp_dir();
         temp_path.push("lootscribe_test_links.txt");
@@ -541,7 +589,7 @@ mod tests {
             "# Comentário ignorado\n\n\
              https://makerworld.com/model/1 | 15cm, pintura artesanal\n\
              https://makerworld.com/model/2\n\
-             https://makerworld.com/model/1 | duplicada deve ser ignorada"
+             https://makerworld.com/model/1/#profileId-999 | duplicada com fragmento deve ser ignorada"
         )
         .unwrap();
 
